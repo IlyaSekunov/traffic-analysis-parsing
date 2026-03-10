@@ -3,6 +3,11 @@ Feature extraction functions for hh.ru resume data.
 
 Each private function transforms one raw text column into a numeric Series.
 The public ``build_xy`` function assembles the full feature matrix and target.
+
+Feature list (11 total)
+-----------------------
+is_male, age, town, full_time, has_car, higher_education,
+remote_work, experience, desired_position, last_position, last_employer
 """
 
 import numpy as np
@@ -18,9 +23,7 @@ def _extract_salary(series: pd.Series) -> pd.Series:
     """
     return (
         series.astype(str)
-        # Keep only digits and spaces, then strip
         .str.extract(r"(\d[\d\s]*\d|\d+)")[0]
-        # Remove internal spaces: '50 000' -> '50000'
         .str.replace(r"\s+", "", regex=True)
         .replace("nan", pd.NA)
         .replace("", pd.NA)
@@ -30,8 +33,7 @@ def _extract_salary(series: pd.Series) -> pd.Series:
 
 def _extract_age(series: pd.Series) -> pd.Series:
     """Extract age in years from a combined gender/age string."""
-    age_regex = r"(\d+)\s*год"
-    return series.str.extract(age_regex)[0].astype("Int64")
+    return series.str.extract(r"(\d+)\s*год")[0].astype("Int64")
 
 
 def _extract_time(series: pd.Series) -> pd.Series:
@@ -66,8 +68,24 @@ def _extract_remote(series: pd.Series) -> pd.Series:
 
 def _extract_experience(series: pd.Series) -> pd.Series:
     """Extract total years of experience; returns NA when not found."""
-    years = series.str.extract(r"(\d+)\s*лет")[0]
-    return years.astype("Int64")
+    return series.str.extract(r"(\d+)\s*лет")[0].astype("Int64")
+
+
+def _encode_category(series: pd.Series) -> pd.Series:
+    """Encode a free-text column as integer category codes.
+
+    Normalises whitespace and lowercases before encoding so that
+    'Программист' and 'программист ' map to the same code.
+    Null and 'не указано' values get code -1.
+    """
+    normalised = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .replace("nan", pd.NA)
+        .replace("не указано", pd.NA)
+    )
+    return normalised.astype("category").cat.codes
 
 
 def build_xy(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -96,10 +114,18 @@ def build_xy(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
             "experience": _extract_experience(
                 df["Опыт (двойное нажатие для полной версии)"]
             ),
+            # High-signal text columns — category codes.
+            # 'desired_position' is the strongest predictor of salary
+            # and should give the biggest R² lift.
+            "desired_position": _encode_category(df["Ищет работу на должность:"]),
+            "last_position": _encode_category(df["Последеняя/нынешняя должность"]),
+            "last_employer": _encode_category(df["Последенее/нынешнее место работы"]),
         }
     )
 
-    mask = y.notna()
+    # Remove rows with missing or clearly invalid salaries.
+    # Realistic hh.ru range: 10 000 – 1 000 000 RUB/month.
+    mask = y.notna() & (y >= 10_000) & (y <= 1_000_000)
     X = X[mask].fillna(0)
     y = y[mask]
 
